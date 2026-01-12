@@ -1,0 +1,13 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.TennisRecordingSoftware" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Customize your light theme here. -->
+        <item name="popupMenuStyle">@style/RoundedPopupMenu</item>
+    </style>
+
+    <style name="Theme.TennisRecordingSoftware" parent="Base.Theme.TennisRecordingSoftware" />
+
+    <style name="RoundedPopupMenu" parent="@style/Widget.AppCompat.PopupMenu">
+        <item name="android:popupBackground">@drawable/popup_background</item>
+    </style>
+</resources>
