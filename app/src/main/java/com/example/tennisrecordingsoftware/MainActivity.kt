@@ -30,7 +30,8 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity() {
 
     private var videoCapture: VideoCapture<Recorder>? = null
-    private var recording: Recording? = null
+    private var activeRecording: Recording? = null
+    private var pendingRecording: PendingRecording? = null
     private lateinit var cameraExecutor: ExecutorService
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -41,11 +42,12 @@ class MainActivity : AppCompatActivity() {
     private var stealthEnabled: Boolean = false
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var viewFinder: PreviewView
 
     // Timer variables
     private var secondsElapsed: Long = 0
     private var stealthTimerSeconds: Int = 0
-    
+
     private val timerRunnable = object : Runnable {
         override fun run() {
             if (!isRecording) return
@@ -74,6 +76,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        viewFinder = findViewById(R.id.viewFinder)
+
         prefs = getSharedPreferences("MatchCamSettings", Context.MODE_PRIVATE)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
@@ -82,7 +86,7 @@ class MainActivity : AppCompatActivity() {
         loadSavedSettings()
 
         findViewById<Button>(R.id.video_capture_button)?.setOnClickListener { captureVideo() }
-        
+
         val fabSettings = findViewById<FloatingActionButton>(R.id.fab_settings)
         val settingsLayout = findViewById<LinearLayout>(R.id.settings_layout)
         val zoomLayout = findViewById<LinearLayout>(R.id.zoom_layout)
@@ -164,7 +168,7 @@ class MainActivity : AppCompatActivity() {
         val minRatio = zoomState.minZoomRatio
         val maxRatio = zoomState.maxZoomRatio
         val commonZooms = listOf(0.5f, 0.6f, 1.0f, 2.0f, 3.0f, 5.0f)
-        
+
         val items = commonZooms.filter { it in minRatio..maxRatio }.toMutableList()
         if (minRatio !in items) items.add(0, minRatio)
         if (maxRatio !in items && maxRatio > minRatio) items.add(maxRatio)
@@ -253,7 +257,7 @@ class MainActivity : AppCompatActivity() {
                     .build()
                 videoCapture = VideoCapture.withOutput(recorder)
                 val preview = Preview.Builder().build().also {
-                    it.surfaceProvider = findViewById<PreviewView>(R.id.viewFinder).surfaceProvider
+                    it.surfaceProvider = viewFinder.surfaceProvider
                 }
                 cameraProvider.unbindAll()
                 val camera = cameraProvider.bindToLifecycle(this, cameraSelector, preview, videoCapture)
@@ -269,15 +273,9 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("MissingPermission")
     private fun captureVideo() {
-        val capture = videoCapture ?: return
-        val btn = findViewById<Button>(R.id.video_capture_button)
-
-        if (recording != null) {
-            isRecording = false // User requested stop
-            stopTimer()
-            stopFlashHeartbeat()
-            recording?.stop()
-            recording = null
+        if (activeRecording != null) {
+            isRecording = false
+            activeRecording?.stop()
             return
         }
 
@@ -286,6 +284,13 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.panel_click_interceptor).visibility = View.GONE
         saveSettings()
 
+        pendingRecording = createPendingRecording()
+        startNewRecording()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun createPendingRecording(): PendingRecording {
+        val capture = videoCapture ?: throw IllegalStateException("VideoCapture is not initialized")
         val name = "MatchCam_${System.currentTimeMillis()}"
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -299,51 +304,52 @@ class MainActivity : AppCompatActivity() {
         if (maxFileSizeBytes > 0) optsBuilder.setFileSizeLimit(maxFileSizeBytes)
         val opts = optsBuilder.build()
 
-        recording = capture.output.prepareRecording(this, opts)
-            .withAudioEnabled()
-            .start(ContextCompat.getMainExecutor(this)) { event ->
-                if (event is VideoRecordEvent.Start) {
-                    isRecording = true
-                    stealthTimerSeconds = 0
-                    btn?.setText(R.string.stop_recording)
-                    btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.RED)
-                    startTimer()
-                    startFlashHeartbeat()
-                } else if (event is VideoRecordEvent.Finalize) {
-                    // Only restart if the user didn't intentionally stop the recording
-                    if (event.error == VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED && isRecording) {
-                        Log.d("MatchCam", "File limit reached. Restarting segment...")
-                        recording = null
-                        mainHandler.postDelayed({ captureVideo() }, 100) 
+        return capture.output.prepareRecording(this, opts).withAudioEnabled()
+    }
+
+    private fun startNewRecording() {
+        val pending = pendingRecording ?: return
+        activeRecording = pending.start(ContextCompat.getMainExecutor(this), videoRecordEventListener)
+        pendingRecording = createPendingRecording()
+    }
+
+    private val videoRecordEventListener = { event: VideoRecordEvent ->
+        val btn = findViewById<Button>(R.id.video_capture_button)
+        when (event) {
+            is VideoRecordEvent.Start -> {
+                isRecording = true
+                stealthTimerSeconds = 0
+                btn?.setText(R.string.stop_recording)
+                btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.RED)
+                startTimer()
+                startFlashHeartbeat()
+            }
+            is VideoRecordEvent.Finalize -> {
+                if (event.error == VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED && isRecording) {
+                    Log.d("MatchCam", "File limit reached. Starting new segment...")
+                    startNewRecording()
+                } else {
+                    val hadError = isRecording && event.error != VideoRecordEvent.Finalize.ERROR_NONE
+                    activeRecording = null
+                    pendingRecording = null
+                    isRecording = false
+                    stopTimer()
+                    stopFlashHeartbeat()
+
+                    btn?.setText(R.string.start_recording)
+                    btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#4CAF50"))
+
+                    if (hadError) {
+                        Log.e("MatchCam", "Recording failed with error: ${event.error}")
                     } else {
-                        val wasUserRequest = !isRecording
-                        isRecording = false
-                        stopTimer()
-                        stopFlashHeartbeat()
-                        recording = null
-                        btn?.setText(R.string.start_recording)
-                        btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#4CAF50"))
-                        
-                        when (event.error) {
-                            VideoRecordEvent.Finalize.ERROR_NONE -> {
-                                Toast.makeText(this, "Video saved to Photos!", Toast.LENGTH_SHORT).show()
-                            }
-                            VideoRecordEvent.Finalize.ERROR_INSUFFICIENT_STORAGE -> {
-                                Toast.makeText(this, "Storage Full!", Toast.LENGTH_LONG).show()
-                            }
-                            else -> {
-                                if (!wasUserRequest) {
-                                    Log.e("MatchCam", "Unexpected stop! Error: ${event.error}")
-                                    // Hardware busy recovery
-                                    if (event.error == VideoRecordEvent.Finalize.ERROR_RECORDER_ERROR) {
-                                        mainHandler.postDelayed({ captureVideo() }, 500)
-                                    }
-                                }
-                            }
-                        }
+                        Toast.makeText(this, "Video saved to Photos!", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
+            is VideoRecordEvent.Pause, is VideoRecordEvent.Resume, is VideoRecordEvent.Status -> {
+                // No-op for now
+            }
+        }
     }
 
     private fun startTimer() {
@@ -395,7 +401,7 @@ class MainActivity : AppCompatActivity() {
         mainHandler.removeCallbacks(flashRunnable)
         mainHandler.post(flashRunnable)
     }
-    
+
     private fun stopFlashHeartbeat() {
         mainHandler.removeCallbacks(flashRunnable)
         cameraControl?.enableTorch(false)
