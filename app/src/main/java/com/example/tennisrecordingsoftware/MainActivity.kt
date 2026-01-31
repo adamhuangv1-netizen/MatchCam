@@ -309,11 +309,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun startNewRecording() {
         val pending = pendingRecording ?: return
-        activeRecording = pending.start(ContextCompat.getMainExecutor(this), videoRecordEventListener)
+        activeRecording = pending.start(ContextCompat.getMainExecutor(this)) { event ->
+            videoRecordEventListener(event)
+        }
         pendingRecording = createPendingRecording()
     }
 
-    private val videoRecordEventListener = { event: VideoRecordEvent ->
+    private fun videoRecordEventListener(event: VideoRecordEvent) {
         val btn = findViewById<Button>(R.id.video_capture_button)
         when (event) {
             is VideoRecordEvent.Start -> {
@@ -346,8 +348,14 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-            is VideoRecordEvent.Pause, is VideoRecordEvent.Resume, is VideoRecordEvent.Status -> {
-                // No-op for now
+            is VideoRecordEvent.Status -> {
+                // No-op for now. Can be used to update UI with recording time.
+            }
+            is VideoRecordEvent.Pause -> {
+                // No-op
+            }
+            is VideoRecordEvent.Resume -> {
+                // No-op
             }
         }
     }
