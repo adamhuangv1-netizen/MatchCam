@@ -29,9 +29,16 @@ import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
-    private var videoCapture: VideoCapture<Recorder>? = null
+    // Dual A/B recorders for gapless recording
+    private var videoCaptureA: VideoCapture<Recorder>? = null
+    private var videoCaptureB: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
-    private var pendingRecording: PendingRecording? = null
+    private var outgoingRecording: Recording? = null
+    private var useRecorderA: Boolean = true
+    private var isTransitioning: Boolean = false
+    private var dualRecorderSupported: Boolean = false
+    private var recordingGeneration: Int = 0
+
     private lateinit var cameraExecutor: ExecutorService
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -245,22 +252,47 @@ class MainActivity : AppCompatActivity() {
         if (allPermissionsGranted()) startCamera() else finish()
     }
 
+    private fun buildRecorder(): VideoCapture<Recorder> {
+        val quality = getSelectedQuality()
+        val recorder = Recorder.Builder()
+            .setQualitySelector(QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
+            .build()
+        return VideoCapture.withOutput(recorder)
+    }
+
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             try {
                 val cameraProvider = cameraProviderFuture.get()
                 val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-                val quality = getSelectedQuality()
-                val recorder = Recorder.Builder()
-                    .setQualitySelector(QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
-                    .build()
-                videoCapture = VideoCapture.withOutput(recorder)
+
+                videoCaptureA = buildRecorder()
+                videoCaptureB = buildRecorder()
+
                 val preview = Preview.Builder().build().also {
                     it.surfaceProvider = viewFinder.surfaceProvider
                 }
+
                 cameraProvider.unbindAll()
-                val camera = cameraProvider.bindToLifecycle(this, cameraSelector, preview, videoCapture)
+
+                // Try binding both recorders for gapless recording
+                val camera = try {
+                    val cam = cameraProvider.bindToLifecycle(
+                        this, cameraSelector, preview, videoCaptureA, videoCaptureB
+                    )
+                    dualRecorderSupported = true
+                    Log.d("MatchCam", "Dual recorder mode enabled")
+                    cam
+                } catch (e: Exception) {
+                    // Device doesn't support 3 use cases; fall back to single recorder
+                    Log.w("MatchCam", "Dual recorder not supported, falling back to single mode", e)
+                    cameraProvider.unbindAll()
+                    videoCaptureB = null
+                    dualRecorderSupported = false
+                    cameraProvider.bindToLifecycle(this, cameraSelector, preview, videoCaptureA)
+                }
+
                 cameraControl = camera.cameraControl
                 cameraInfo = camera.cameraInfo
                 cameraInfo?.let { updateZoomPanel(it) }
@@ -271,26 +303,13 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    @SuppressLint("MissingPermission")
-    private fun captureVideo() {
-        if (activeRecording != null) {
-            isRecording = false
-            activeRecording?.stop()
-            return
-        }
-
-        findViewById<View>(R.id.settings_layout).visibility = View.GONE
-        findViewById<View>(R.id.zoom_layout).visibility = View.GONE
-        findViewById<View>(R.id.panel_click_interceptor).visibility = View.GONE
-        saveSettings()
-
-        pendingRecording = createPendingRecording()
-        startNewRecording()
+    private fun getActiveVideoCapture(): VideoCapture<Recorder>? {
+        if (!dualRecorderSupported) return videoCaptureA
+        return if (useRecorderA) videoCaptureA else videoCaptureB
     }
 
     @SuppressLint("MissingPermission")
-    private fun createPendingRecording(): PendingRecording {
-        val capture = videoCapture ?: throw IllegalStateException("VideoCapture is not initialized")
+    private fun createPendingRecording(capture: VideoCapture<Recorder>, withSizeLimit: Boolean): PendingRecording {
         val name = "MatchCam_${System.currentTimeMillis()}"
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -301,62 +320,154 @@ class MainActivity : AppCompatActivity() {
         val maxFileSizeBytes = getSelectedFileSizeLimit()
         val optsBuilder = MediaStoreOutputOptions.Builder(contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
             .setContentValues(contentValues)
-        if (maxFileSizeBytes > 0) optsBuilder.setFileSizeLimit(maxFileSizeBytes)
-        val opts = optsBuilder.build()
 
+        // In dual mode, we self-manage file size via Status events (no OS limit).
+        // In single mode, set the hard limit so we get ERROR_FILE_SIZE_LIMIT_REACHED.
+        if (withSizeLimit && maxFileSizeBytes > 0) {
+            optsBuilder.setFileSizeLimit(maxFileSizeBytes)
+        }
+
+        val opts = optsBuilder.build()
         return capture.output.prepareRecording(this, opts).withAudioEnabled()
     }
 
-    private fun startNewRecording() {
-        val pending = pendingRecording ?: return
-        activeRecording = pending.start(ContextCompat.getMainExecutor(this)) { event ->
-            videoRecordEventListener(event)
+    @SuppressLint("MissingPermission")
+    private fun captureVideo() {
+        if (activeRecording != null) {
+            // User pressed stop
+            isRecording = false
+            activeRecording?.stop()
+            outgoingRecording?.stop()
+            outgoingRecording = null
+            return
         }
-        pendingRecording = createPendingRecording()
+
+        findViewById<View>(R.id.settings_layout).visibility = View.GONE
+        findViewById<View>(R.id.zoom_layout).visibility = View.GONE
+        findViewById<View>(R.id.panel_click_interceptor).visibility = View.GONE
+        saveSettings()
+
+        useRecorderA = true
+        recordingGeneration = 0
+        isTransitioning = false
+        outgoingRecording = null
+
+        val capture = getActiveVideoCapture() ?: return
+        val useSizeLimit = !dualRecorderSupported
+        val pending = createPendingRecording(capture, withSizeLimit = useSizeLimit)
+        val gen = recordingGeneration
+
+        activeRecording = pending.start(ContextCompat.getMainExecutor(this)) { event ->
+            onRecordingEvent(event, gen)
+        }
     }
 
-    private fun videoRecordEventListener(event: VideoRecordEvent) {
+    @SuppressLint("MissingPermission")
+    private fun transitionToNextRecorder() {
+        if (isTransitioning) return
+        isTransitioning = true
+
+        val oldRecording = activeRecording
+        useRecorderA = !useRecorderA
+        recordingGeneration++
+        val newGen = recordingGeneration
+
+        val capture = getActiveVideoCapture() ?: run {
+            isTransitioning = false
+            return
+        }
+
+        Log.d("MatchCam", "Transitioning to recorder ${if (useRecorderA) "A" else "B"}, gen=$newGen")
+
+        val pending = createPendingRecording(capture, withSizeLimit = false)
+        activeRecording = pending.start(ContextCompat.getMainExecutor(this)) { event ->
+            onRecordingEvent(event, newGen)
+        }
+
+        // The old recording becomes the outgoing recording.
+        // We'll stop it once the new recording fires its Start event.
+        outgoingRecording = oldRecording
+    }
+
+    private fun onRecordingEvent(event: VideoRecordEvent, generation: Int) {
         val btn = findViewById<Button>(R.id.video_capture_button)
         when (event) {
             is VideoRecordEvent.Start -> {
-                isRecording = true
-                stealthTimerSeconds = 0
-                btn?.setText(R.string.stop_recording)
-                btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.RED)
-                startTimer()
-                startFlashHeartbeat()
+                if (generation == 0) {
+                    // First segment: set up UI
+                    isRecording = true
+                    stealthTimerSeconds = 0
+                    btn?.setText(R.string.stop_recording)
+                    btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.RED)
+                    startTimer()
+                    startFlashHeartbeat()
+                } else if (isTransitioning) {
+                    // New segment started during transition — stop the old one
+                    Log.d("MatchCam", "New segment started (gen=$generation), stopping old recording")
+                    outgoingRecording?.stop()
+                    outgoingRecording = null
+                    isTransitioning = false
+                }
+            }
+            is VideoRecordEvent.Status -> {
+                // Only monitor bytes from the current generation in dual mode
+                if (dualRecorderSupported && generation == recordingGeneration && isRecording && !isTransitioning) {
+                    val limit = getSelectedFileSizeLimit()
+                    if (limit > 0) {
+                        val bytesRecorded = event.recordingStats.numBytesRecorded
+                        val threshold = (limit * 0.9).toLong()
+                        if (bytesRecorded >= threshold) {
+                            Log.d("MatchCam", "Reached 90% of file size limit ($bytesRecorded / $limit bytes), transitioning")
+                            transitionToNextRecorder()
+                        }
+                    }
+                }
             }
             is VideoRecordEvent.Finalize -> {
-                if (event.error == VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED && isRecording) {
-                    Log.d("MatchCam", "File limit reached. Starting new segment...")
-                    startNewRecording()
-                } else {
-                    val hadError = isRecording && event.error != VideoRecordEvent.Finalize.ERROR_NONE
+                if (!dualRecorderSupported
+                    && event.error == VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED
+                    && isRecording
+                ) {
+                    // Single-recorder fallback: file limit reached, start new segment on same capture
+                    Log.d("MatchCam", "File limit reached (single mode). Starting new segment...")
+                    val capture = getActiveVideoCapture() ?: return
+                    recordingGeneration++
+                    val newGen = recordingGeneration
+                    val pending = createPendingRecording(capture, withSizeLimit = true)
+                    activeRecording = pending.start(ContextCompat.getMainExecutor(this)) { ev ->
+                        onRecordingEvent(ev, newGen)
+                    }
+                    return
+                }
+
+                if (generation == recordingGeneration && !isRecording) {
+                    // User-initiated stop: clean up UI
                     activeRecording = null
-                    pendingRecording = null
-                    isRecording = false
+                    outgoingRecording = null
+                    isTransitioning = false
                     stopTimer()
                     stopFlashHeartbeat()
 
                     btn?.setText(R.string.start_recording)
                     btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#4CAF50"))
 
-                    if (hadError) {
-                        Log.e("MatchCam", "Recording failed with error: ${event.error}")
+                    if (event.error != VideoRecordEvent.Finalize.ERROR_NONE) {
+                        Log.e("MatchCam", "Recording finalized with error: ${event.error}")
                     } else {
                         Toast.makeText(this, "Video saved to Photos!", Toast.LENGTH_SHORT).show()
                     }
+                } else {
+                    // Old segment finalized (during transition or after user stop)
+                    Log.d("MatchCam", "Old segment finalized (gen=$generation, current=${recordingGeneration})")
+                    if (event.error != VideoRecordEvent.Finalize.ERROR_NONE
+                        && event.error != VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED
+                    ) {
+                        Log.e("MatchCam", "Old segment error: ${event.error}")
+                    }
                 }
             }
-            is VideoRecordEvent.Status -> {
-                // No-op for now. Can be used to update UI with recording time.
-            }
-            is VideoRecordEvent.Pause -> {
-                // No-op
-            }
-            is VideoRecordEvent.Resume -> {
-                // No-op
-            }
+            is VideoRecordEvent.Pause -> {}
+            is VideoRecordEvent.Resume -> {}
         }
     }
 
