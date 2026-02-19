@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -100,7 +101,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val pInfo = packageManager.getPackageInfo(packageName, 0)
             val version = pInfo.versionName
-            findViewById<TextView>(R.id.about_version).text = "Version $version"
+            findViewById<TextView>(R.id.about_version)?.text = "Version $version"
         } catch (e: PackageManager.NameNotFoundException) {
             e.printStackTrace()
         }
@@ -302,6 +303,7 @@ class MainActivity : AppCompatActivity() {
         activeRecording?.stop()
         outgoingRecording?.stop()
         outgoingRecording = null
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         Toast.makeText(this, "Storage limit reached \u2014 recording stopped", Toast.LENGTH_LONG).show()
     }
 
@@ -470,6 +472,7 @@ class MainActivity : AppCompatActivity() {
                 if (generation == 0) {
                     // First segment: set up UI
                     isRecording = true
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
                     stealthTimerSeconds = 0
                     btn?.setText(R.string.stop_recording)
                     btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.RED)
@@ -540,6 +543,7 @@ class MainActivity : AppCompatActivity() {
                     activeRecording = null
                     outgoingRecording = null
                     isTransitioning = false
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                     stopTimer()
                     stopFlashHeartbeat()
 
