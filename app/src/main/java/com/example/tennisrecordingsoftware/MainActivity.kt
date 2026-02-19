@@ -93,6 +93,7 @@ class MainActivity : AppCompatActivity() {
 
         setupQualitySpinner()
         setupSegmentSizeSpinner()
+        setupMaxStorageToggle()
         loadSavedSettings()
 
         // Display app version
@@ -168,6 +169,7 @@ class MainActivity : AppCompatActivity() {
         editor.putBoolean("flash_enabled", findViewById<SwitchCompat>(R.id.switch_flash_enabled).isChecked)
         editor.putString("flash_interval", findViewById<EditText>(R.id.edit_flash_interval).text.toString())
         editor.putInt("quality_pos", findViewById<Spinner>(R.id.spinner_quality).selectedItemPosition)
+        editor.putBoolean("max_storage_enabled", findViewById<SwitchCompat>(R.id.switch_max_storage).isChecked)
         editor.putString("max_storage_gb", findViewById<EditText>(R.id.edit_max_storage).text.toString())
         editor.apply()
     }
@@ -178,6 +180,9 @@ class MainActivity : AppCompatActivity() {
         findViewById<SwitchCompat>(R.id.switch_flash_enabled).isChecked = prefs.getBoolean("flash_enabled", true)
         findViewById<EditText>(R.id.edit_flash_interval).setText(prefs.getString("flash_interval", "10"))
         findViewById<Spinner>(R.id.spinner_quality).setSelection(prefs.getInt("quality_pos", 1))
+        val maxStorageEnabled = prefs.getBoolean("max_storage_enabled", false)
+        findViewById<SwitchCompat>(R.id.switch_max_storage).isChecked = maxStorageEnabled
+        findViewById<EditText>(R.id.edit_max_storage).visibility = if (maxStorageEnabled) View.VISIBLE else View.GONE
         findViewById<EditText>(R.id.edit_max_storage).setText(prefs.getString("max_storage_gb", ""))
     }
 
@@ -233,6 +238,14 @@ class MainActivity : AppCompatActivity() {
         spinner.setSelection(1)
     }
 
+    private fun setupMaxStorageToggle() {
+        val switch = findViewById<SwitchCompat>(R.id.switch_max_storage) ?: return
+        val editText = findViewById<EditText>(R.id.edit_max_storage) ?: return
+        switch.setOnCheckedChangeListener { _, isChecked ->
+            editText.visibility = if (isChecked) View.VISIBLE else View.GONE
+        }
+    }
+
     private fun getSelectedQuality(): Quality {
         val spinner = findViewById<Spinner>(R.id.spinner_quality)
         val selected = spinner?.selectedItem?.toString() ?: ""
@@ -258,6 +271,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getMaxStorageLimitBytes(): Long {
+        val enabled = findViewById<SwitchCompat>(R.id.switch_max_storage)?.isChecked ?: false
+        if (!enabled) return 0L
         val text = findViewById<EditText>(R.id.edit_max_storage)?.text?.toString() ?: ""
         val gbValue = text.toLongOrNull() ?: return 0L
         return if (gbValue <= 0) 0L else gbValue * 1024 * 1024 * 1024

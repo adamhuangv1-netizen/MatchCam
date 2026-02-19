@@ -156,23 +156,28 @@
                     android:layout_height="48dp"
                     android:backgroundTint="#FFFFFF" />
 
-                <TextView
-                    android:layout_width="wrap_content"
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/switch_max_storage"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Max Storage (GB)"
-                    android:textSize="12sp"
-                    android:textColor="#BDBDBD"
-                    android:layout_marginTop="12dp" />
+                    android:text="Max Storage"
+                    android:textColor="#FFFFFF"
+                    android:checked="false"
+                    app:thumbTint="@color/switch_thumb_tint"
+                    app:trackTint="@color/switch_track_tint"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp" />
                 <EditText
                     android:id="@+id/edit_max_storage"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:inputType="number"
-                    android:hint="Unlimited"
+                    android:hint="Enter GB"
                     android:textSize="16sp"
                     android:textColor="#FFFFFF"
                     android:textColorHint="#757575"
-                    android:backgroundTint="#FFFFFF" />
+                    android:backgroundTint="#FFFFFF"
+                    android:visibility="gone" />
 
                 <View
                     android:layout_width="match_parent"
