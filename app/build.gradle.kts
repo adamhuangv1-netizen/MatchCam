@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace = "com.example.tennisrecordingsoftware"
+    namespace = "com.adamhuang.splitshot"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.tennisrecordingsoftware"
+        applicationId = "com.adamhuang.splitshot"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
