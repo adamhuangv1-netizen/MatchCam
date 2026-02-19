@@ -279,24 +279,6 @@ class MainActivity : AppCompatActivity() {
         return if (gbValue <= 0) 0L else gbValue * 1024 * 1024 * 1024
     }
 
-    private fun getTotalMatchCamStorageBytes(): Long {
-        var total = 0L
-        val projection = arrayOf(MediaStore.MediaColumns.SIZE)
-        val selection = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
-        val selectionArgs = arrayOf("DCIM/MatchCam%")
-        val cursor: android.database.Cursor? = contentResolver.query(
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            projection, selection, selectionArgs, null
-        )
-        cursor?.use {
-            val sizeColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
-            while (it.moveToNext()) {
-                total += it.getLong(sizeColumn)
-            }
-        }
-        return total
-    }
-
     private fun stopRecordingForStorageLimit() {
         Log.d("MatchCam", "Max storage limit reached, stopping recording")
         isRecording = false
@@ -411,17 +393,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.panel_click_interceptor).visibility = View.GONE
         saveSettings()
 
-        // Check max storage limit before starting
-        val maxStorageLimit = getMaxStorageLimitBytes()
-        if (maxStorageLimit > 0) {
-            cachedStorageBytes = getTotalMatchCamStorageBytes()
-            if (cachedStorageBytes >= maxStorageLimit) {
-                Toast.makeText(this, "Storage limit reached \u2014 cannot start recording", Toast.LENGTH_LONG).show()
-                return
-            }
-        } else {
-            cachedStorageBytes = 0L
-        }
+        cachedStorageBytes = 0L
 
         useRecorderA = true
         recordingGeneration = 0
@@ -550,7 +522,10 @@ class MainActivity : AppCompatActivity() {
                     btn?.setText(R.string.start_recording)
                     btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#4CAF50"))
 
-                    if (event.error != VideoRecordEvent.Finalize.ERROR_NONE) {
+                    if (event.error == VideoRecordEvent.Finalize.ERROR_INSUFFICIENT_STORAGE) {
+                        Log.e("MatchCam", "Recording stopped: insufficient storage")
+                        Toast.makeText(this, "Recording stopped \u2014 device storage is full", Toast.LENGTH_LONG).show()
+                    } else if (event.error != VideoRecordEvent.Finalize.ERROR_NONE) {
                         Log.e("MatchCam", "Recording finalized with error: ${event.error}")
                     } else {
                         Toast.makeText(this, "Video saved to Photos!", Toast.LENGTH_SHORT).show()
