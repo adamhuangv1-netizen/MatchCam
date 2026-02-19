@@ -29,15 +29,15 @@ import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
-    // Dual A/B recorders for gapless recording
     private var videoCaptureA: VideoCapture<Recorder>? = null
     private var videoCaptureB: VideoCapture<Recorder>? = null
+    private var dualRecorderSupported = false
+    private var useRecorderA = true
+
     private var activeRecording: Recording? = null
     private var outgoingRecording: Recording? = null
-    private var useRecorderA: Boolean = true
-    private var isTransitioning: Boolean = false
-    private var dualRecorderSupported: Boolean = false
-    private var recordingGeneration: Int = 0
+    private var recordingGeneration = 0
+    private var isTransitioning = false
 
     private lateinit var cameraExecutor: ExecutorService
 
@@ -50,6 +50,9 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: SharedPreferences
     private lateinit var viewFinder: PreviewView
+
+    // Max storage tracking (cached to avoid repeated MediaStore queries)
+    private var cachedStorageBytes: Long = 0L
 
     // Timer variables
     private var secondsElapsed: Long = 0
@@ -91,6 +94,15 @@ class MainActivity : AppCompatActivity() {
         setupQualitySpinner()
         setupSegmentSizeSpinner()
         loadSavedSettings()
+
+        // Display app version
+        try {
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            val version = pInfo.versionName
+            findViewById<TextView>(R.id.about_version).text = "Version $version"
+        } catch (e: PackageManager.NameNotFoundException) {
+            e.printStackTrace()
+        }
 
         findViewById<Button>(R.id.video_capture_button)?.setOnClickListener { captureVideo() }
 
@@ -156,6 +168,7 @@ class MainActivity : AppCompatActivity() {
         editor.putBoolean("flash_enabled", findViewById<SwitchCompat>(R.id.switch_flash_enabled).isChecked)
         editor.putString("flash_interval", findViewById<EditText>(R.id.edit_flash_interval).text.toString())
         editor.putInt("quality_pos", findViewById<Spinner>(R.id.spinner_quality).selectedItemPosition)
+        editor.putString("max_storage_gb", findViewById<EditText>(R.id.edit_max_storage).text.toString())
         editor.apply()
     }
 
@@ -165,6 +178,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<SwitchCompat>(R.id.switch_flash_enabled).isChecked = prefs.getBoolean("flash_enabled", true)
         findViewById<EditText>(R.id.edit_flash_interval).setText(prefs.getString("flash_interval", "10"))
         findViewById<Spinner>(R.id.spinner_quality).setSelection(prefs.getInt("quality_pos", 1))
+        findViewById<EditText>(R.id.edit_max_storage).setText(prefs.getString("max_storage_gb", ""))
     }
 
     private fun updateZoomPanel(info: CameraInfo) {
@@ -241,6 +255,39 @@ class MainActivity : AppCompatActivity() {
             else -> 0L
         }
         return if (gbValue == 0L) 0L else gbValue * 1024 * 1024 * 1024
+    }
+
+    private fun getMaxStorageLimitBytes(): Long {
+        val text = findViewById<EditText>(R.id.edit_max_storage)?.text?.toString() ?: ""
+        val gbValue = text.toLongOrNull() ?: return 0L
+        return if (gbValue <= 0) 0L else gbValue * 1024 * 1024 * 1024
+    }
+
+    private fun getTotalMatchCamStorageBytes(): Long {
+        var total = 0L
+        val projection = arrayOf(MediaStore.MediaColumns.SIZE)
+        val selection = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
+        val selectionArgs = arrayOf("DCIM/MatchCam%")
+        val cursor: android.database.Cursor? = contentResolver.query(
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            projection, selection, selectionArgs, null
+        )
+        cursor?.use {
+            val sizeColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+            while (it.moveToNext()) {
+                total += it.getLong(sizeColumn)
+            }
+        }
+        return total
+    }
+
+    private fun stopRecordingForStorageLimit() {
+        Log.d("MatchCam", "Max storage limit reached, stopping recording")
+        isRecording = false
+        activeRecording?.stop()
+        outgoingRecording?.stop()
+        outgoingRecording = null
+        Toast.makeText(this, "Storage limit reached \u2014 recording stopped", Toast.LENGTH_LONG).show()
     }
 
     private fun allPermissionsGranted() = requiredPermissions.all {
@@ -347,6 +394,18 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.panel_click_interceptor).visibility = View.GONE
         saveSettings()
 
+        // Check max storage limit before starting
+        val maxStorageLimit = getMaxStorageLimitBytes()
+        if (maxStorageLimit > 0) {
+            cachedStorageBytes = getTotalMatchCamStorageBytes()
+            if (cachedStorageBytes >= maxStorageLimit) {
+                Toast.makeText(this, "Storage limit reached \u2014 cannot start recording", Toast.LENGTH_LONG).show()
+                return
+            }
+        } else {
+            cachedStorageBytes = 0L
+        }
+
         useRecorderA = true
         recordingGeneration = 0
         isTransitioning = false
@@ -410,24 +469,45 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             is VideoRecordEvent.Status -> {
-                // Only monitor bytes from the current generation in dual mode
-                if (dualRecorderSupported && generation == recordingGeneration && isRecording && !isTransitioning) {
-                    val limit = getSelectedFileSizeLimit()
-                    if (limit > 0) {
-                        val bytesRecorded = event.recordingStats.numBytesRecorded
-                        val threshold = (limit * 0.9).toLong()
-                        if (bytesRecorded >= threshold) {
-                            Log.d("MatchCam", "Reached 90% of file size limit ($bytesRecorded / $limit bytes), transitioning")
-                            transitionToNextRecorder()
+                if (generation == recordingGeneration && isRecording) {
+                    val bytesRecorded = event.recordingStats.numBytesRecorded
+
+                    // Check max storage limit
+                    val maxStorage = getMaxStorageLimitBytes()
+                    if (maxStorage > 0 && (cachedStorageBytes + bytesRecorded) >= maxStorage) {
+                        stopRecordingForStorageLimit()
+                        return
+                    }
+
+                    // Only monitor segment size from the current generation in dual mode
+                    if (dualRecorderSupported && !isTransitioning) {
+                        val limit = getSelectedFileSizeLimit()
+                        if (limit > 0) {
+                            val threshold = (limit * 0.9).toLong()
+                            if (bytesRecorded >= threshold) {
+                                Log.d("MatchCam", "Reached 90% of file size limit ($bytesRecorded / $limit bytes), transitioning")
+                                transitionToNextRecorder()
+                            }
                         }
                     }
                 }
             }
             is VideoRecordEvent.Finalize -> {
+                // Update cached storage with finalized segment size
+                val finalizedBytes = event.recordingStats.numBytesRecorded
+                if (finalizedBytes > 0) cachedStorageBytes += finalizedBytes
+
                 if (!dualRecorderSupported
                     && event.error == VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED
                     && isRecording
                 ) {
+                    // Check max storage limit before starting next segment
+                    val maxStorage = getMaxStorageLimitBytes()
+                    if (maxStorage > 0 && cachedStorageBytes >= maxStorage) {
+                        stopRecordingForStorageLimit()
+                        return
+                    }
+
                     // Single-recorder fallback: file limit reached, start new segment on same capture
                     Log.d("MatchCam", "File limit reached (single mode). Starting new segment...")
                     val capture = getActiveVideoCapture() ?: return

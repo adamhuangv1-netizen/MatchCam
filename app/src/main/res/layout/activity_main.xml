@@ -158,6 +158,24 @@
                     android:layout_height="48dp"
                     android:backgroundTint="#FFFFFF" />
 
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Max Storage (GB)"
+                    android:textSize="12sp"
+                    android:textColor="#BDBDBD"
+                    android:layout_marginTop="12dp" />
+                <EditText
+                    android:id="@+id/edit_max_storage"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:hint="Unlimited"
+                    android:textSize="16sp"
+                    android:textColor="#FFFFFF"
+                    android:textColorHint="#757575"
+                    android:backgroundTint="#FFFFFF" />
+
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
