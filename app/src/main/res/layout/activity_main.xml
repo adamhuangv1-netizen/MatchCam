@@ -258,6 +258,15 @@
                     android:textSize="12sp"
                     android:gravity="center"
                     android:layout_marginTop="2dp" />
+                <TextView
+                    android:id="@+id/about_version"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textColor="#BDBDBD"
+                    android:textSize="12sp"
+                    android:gravity="center"
+                    android:layout_marginTop="2dp" />
 
             </LinearLayout>
         </ScrollView>
@@ -273,7 +282,7 @@
         android:focusable="true"
         android:elevation="10dp"
         app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_totoBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
