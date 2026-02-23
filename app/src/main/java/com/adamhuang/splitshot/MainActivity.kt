@@ -52,8 +52,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var viewFinder: PreviewView
 
-    // Max storage tracking (cached to avoid repeated MediaStore queries)
+    private var currentZoomRatio: Float? = null
     private var cachedStorageBytes: Long = 0L
+    private var cachedMaxStorageBytes: Long = 0L
+    private var cachedFileSizeLimit: Long = 0L
+    private var cachedFileSizeThreshold: Long = 0L
 
     // Timer variables
     private var secondsElapsed: Long = 0
@@ -86,6 +89,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
 
         viewFinder = findViewById(R.id.viewFinder)
 
@@ -205,6 +209,7 @@ class MainActivity : AppCompatActivity() {
                 text = "${String.format("%.1f", ratio)}x"
                 setTextColor(Color.WHITE)
                 setOnClickListener {
+                    currentZoomRatio = ratio
                     cameraControl?.setZoomRatio(ratio)
                     findViewById<View>(R.id.zoom_layout)?.visibility = View.GONE
                     findViewById<View>(R.id.panel_click_interceptor)?.visibility = View.GONE
@@ -223,8 +228,11 @@ class MainActivity : AppCompatActivity() {
         spinner.setSelection(1)
 
         spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            private var lastPosition = spinner.selectedItemPosition
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (allPermissionsGranted() && !isRecording) startCamera()
+                if (position == lastPosition) return
+                lastPosition = position
+                if (videoCaptureA != null && allPermissionsGranted() && !isRecording) startCamera()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
@@ -279,13 +287,17 @@ class MainActivity : AppCompatActivity() {
         return if (gbValue <= 0) 0L else gbValue * 1024 * 1024 * 1024
     }
 
-    private fun stopRecordingForStorageLimit() {
-        Log.d("MatchCam", "Max storage limit reached, stopping recording")
+    private fun stopRecording() {
         isRecording = false
         activeRecording?.stop()
         outgoingRecording?.stop()
         outgoingRecording = null
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+
+    private fun stopRecordingForStorageLimit() {
+        Log.d("MatchCam", "Max storage limit reached, stopping recording")
+        stopRecording()
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
         Toast.makeText(this, "Storage limit reached \u2014 recording stopped", Toast.LENGTH_LONG).show()
     }
 
@@ -343,6 +355,11 @@ class MainActivity : AppCompatActivity() {
                 cameraInfo = camera.cameraInfo
                 cameraInfo?.let { updateZoomPanel(it) }
                 hasFlashUnit = camera.cameraInfo.hasFlashUnit()
+                val zoomState = camera.cameraInfo.zoomState.value
+                val minZoom = zoomState?.minZoomRatio ?: 1.0f
+                val maxZoom = zoomState?.maxZoomRatio ?: minZoom
+                val targetZoom = currentZoomRatio?.coerceIn(minZoom, maxZoom) ?: maxOf(0.5f, minZoom)
+                cameraControl?.setZoomRatio(targetZoom)
             } catch (e: Exception) {
                 Log.e("MatchCam", "Camera startup failed", e)
             }
@@ -380,11 +397,7 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private fun captureVideo() {
         if (activeRecording != null) {
-            // User pressed stop
-            isRecording = false
-            activeRecording?.stop()
-            outgoingRecording?.stop()
-            outgoingRecording = null
+            stopRecording()
             return
         }
 
@@ -394,6 +407,9 @@ class MainActivity : AppCompatActivity() {
         saveSettings()
 
         cachedStorageBytes = 0L
+        cachedMaxStorageBytes = getMaxStorageLimitBytes()
+        cachedFileSizeLimit = getSelectedFileSizeLimit()
+        cachedFileSizeThreshold = if (cachedFileSizeLimit > 0) (cachedFileSizeLimit * 0.9).toLong() else 0L
 
         useRecorderA = true
         recordingGeneration = 0
@@ -462,38 +478,33 @@ class MainActivity : AppCompatActivity() {
                 if (generation == recordingGeneration && isRecording) {
                     val bytesRecorded = event.recordingStats.numBytesRecorded
 
-                    // Check max storage limit
-                    val maxStorage = getMaxStorageLimitBytes()
-                    if (maxStorage > 0 && (cachedStorageBytes + bytesRecorded) >= maxStorage) {
+                    if (cachedMaxStorageBytes > 0 && (cachedStorageBytes + bytesRecorded) >= cachedMaxStorageBytes) {
                         stopRecordingForStorageLimit()
                         return
                     }
 
-                    // Only monitor segment size from the current generation in dual mode
-                    if (dualRecorderSupported && !isTransitioning) {
-                        val limit = getSelectedFileSizeLimit()
-                        if (limit > 0) {
-                            val threshold = (limit * 0.9).toLong()
-                            if (bytesRecorded >= threshold) {
-                                Log.d("MatchCam", "Reached 90% of file size limit ($bytesRecorded / $limit bytes), transitioning")
-                                transitionToNextRecorder()
-                            }
-                        }
+                    if (dualRecorderSupported && !isTransitioning && cachedFileSizeThreshold > 0
+                        && bytesRecorded >= cachedFileSizeThreshold
+                    ) {
+                        Log.d("MatchCam", "Reached 90% of file size limit ($bytesRecorded / $cachedFileSizeLimit bytes), transitioning")
+                        transitionToNextRecorder()
                     }
                 }
             }
             is VideoRecordEvent.Finalize -> {
-                // Update cached storage with finalized segment size
                 val finalizedBytes = event.recordingStats.numBytesRecorded
-                if (finalizedBytes > 0) cachedStorageBytes += finalizedBytes
+                if (finalizedBytes > 0
+                    && (event.error == VideoRecordEvent.Finalize.ERROR_NONE
+                        || event.error == VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED)
+                ) {
+                    cachedStorageBytes += finalizedBytes
+                }
 
                 if (!dualRecorderSupported
                     && event.error == VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED
                     && isRecording
                 ) {
-                    // Check max storage limit before starting next segment
-                    val maxStorage = getMaxStorageLimitBytes()
-                    if (maxStorage > 0 && cachedStorageBytes >= maxStorage) {
+                    if (cachedMaxStorageBytes > 0 && cachedStorageBytes >= cachedMaxStorageBytes) {
                         stopRecordingForStorageLimit()
                         return
                     }
@@ -510,15 +521,16 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
-                if (generation == recordingGeneration && !isRecording) {
-                    // User-initiated stop: clean up UI
+                if (generation == recordingGeneration
+                    && (!isRecording || event.error == VideoRecordEvent.Finalize.ERROR_INSUFFICIENT_STORAGE)
+                ) {
+                    isRecording = false
                     activeRecording = null
                     outgoingRecording = null
                     isTransitioning = false
-                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
                     stopTimer()
                     stopFlashHeartbeat()
-
                     btn?.setText(R.string.start_recording)
                     btn?.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#4CAF50"))
 
