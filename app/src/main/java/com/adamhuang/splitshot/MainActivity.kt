@@ -191,6 +191,12 @@ class MainActivity : AppCompatActivity() {
         findViewById<EditText>(R.id.edit_max_storage).setText(prefs.getString("max_storage_gb", ""))
     }
 
+    private fun updateZoomLabel(ratio: Float) {
+        val label = findViewById<TextView>(R.id.zoom_label) ?: return
+        label.text = "${String.format("%.1f", ratio)}x"
+        label.visibility = View.VISIBLE
+    }
+
     private fun updateZoomPanel(info: CameraInfo) {
         val container = findViewById<LinearLayout>(R.id.zoom_options_container) ?: return
         container.removeAllViews()
@@ -198,11 +204,57 @@ class MainActivity : AppCompatActivity() {
         val zoomState = info.zoomState.value ?: return
         val minRatio = zoomState.minZoomRatio
         val maxRatio = zoomState.maxZoomRatio
-        val commonZooms = listOf(0.5f, 0.6f, 1.0f, 2.0f, 3.0f, 5.0f)
+        val commonZooms = listOf(0.5f, 0.6f, 0.7f, 1.0f, 2.0f, 3.0f, 5.0f)
 
         val items = commonZooms.filter { it in minRatio..maxRatio }.toMutableList()
         if (minRatio !in items) items.add(0, minRatio)
         if (maxRatio !in items && maxRatio > minRatio) items.add(maxRatio)
+        items.sort()
+
+        val snapThreshold = (maxRatio - minRatio) * 0.04f
+
+        fun snapToPreset(ratio: Float): Float {
+            val nearest = items.minByOrNull { Math.abs(it - ratio) } ?: ratio
+            return if (Math.abs(nearest - ratio) <= snapThreshold) nearest else ratio
+        }
+
+        val curRatio = currentZoomRatio?.coerceIn(minRatio, maxRatio) ?: minRatio
+
+        val sliderLabel = TextView(this).apply {
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            gravity = android.view.Gravity.CENTER
+            text = "${String.format("%.1f", curRatio)}x"
+            setPadding(0, 8, 0, 0)
+        }
+        container.addView(sliderLabel)
+
+        val seekSteps = 200
+        val seekBar = SeekBar(this).apply {
+            max = seekSteps
+            progress = ((curRatio - minRatio) / (maxRatio - minRatio) * seekSteps).toInt()
+            setPadding(24, 4, 24, 4)
+        }
+
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                val raw = minRatio + (maxRatio - minRatio) * progress / seekSteps
+                val display = snapToPreset(raw)
+                sliderLabel.text = "${String.format("%.1f", display)}x"
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {
+                val raw = minRatio + (maxRatio - minRatio) * sb.progress / seekSteps
+                val final = snapToPreset(raw)
+                currentZoomRatio = final
+                cameraControl?.setZoomRatio(final)
+                updateZoomLabel(final)
+                sliderLabel.text = "${String.format("%.1f", final)}x"
+                sb.progress = ((final - minRatio) / (maxRatio - minRatio) * seekSteps).toInt()
+            }
+        })
+        container.addView(seekBar)
 
         items.forEach { ratio ->
             val btn = Button(this, null, android.R.attr.borderlessButtonStyle).apply {
@@ -211,6 +263,9 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener {
                     currentZoomRatio = ratio
                     cameraControl?.setZoomRatio(ratio)
+                    updateZoomLabel(ratio)
+                    seekBar.progress = ((ratio - minRatio) / (maxRatio - minRatio) * seekSteps).toInt()
+                    sliderLabel.text = "${String.format("%.1f", ratio)}x"
                     findViewById<View>(R.id.zoom_layout)?.visibility = View.GONE
                     findViewById<View>(R.id.panel_click_interceptor)?.visibility = View.GONE
                 }
@@ -360,6 +415,8 @@ class MainActivity : AppCompatActivity() {
                 val maxZoom = zoomState?.maxZoomRatio ?: minZoom
                 val targetZoom = currentZoomRatio?.coerceIn(minZoom, maxZoom) ?: maxOf(0.5f, minZoom)
                 cameraControl?.setZoomRatio(targetZoom)
+                currentZoomRatio = targetZoom
+                updateZoomLabel(targetZoom)
             } catch (e: Exception) {
                 Log.e("MatchCam", "Camera startup failed", e)
             }
