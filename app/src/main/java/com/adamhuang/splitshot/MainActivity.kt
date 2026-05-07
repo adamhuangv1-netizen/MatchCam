@@ -200,11 +200,13 @@ class MainActivity : AppCompatActivity() {
     private fun updateZoomPanel(info: CameraInfo) {
         val container = findViewById<LinearLayout>(R.id.zoom_options_container) ?: return
         container.removeAllViews()
+        container.orientation = LinearLayout.HORIZONTAL
 
         val zoomState = info.zoomState.value ?: return
         val minRatio = zoomState.minZoomRatio
         val maxRatio = zoomState.maxZoomRatio
-        val commonZooms = listOf(0.5f, 0.6f, 0.7f, 1.0f, 2.0f, 3.0f, 5.0f)
+        prefs.edit().putFloat("max_zoom_ratio", maxRatio).apply()
+        val commonZooms = listOf(0.5f, 0.7f, 1.0f, 2.0f)
 
         val items = commonZooms.filter { it in minRatio..maxRatio }.toMutableList()
         if (minRatio !in items) items.add(0, minRatio)
@@ -219,22 +221,34 @@ class MainActivity : AppCompatActivity() {
         }
 
         val curRatio = currentZoomRatio?.coerceIn(minRatio, maxRatio) ?: minRatio
+        val density = resources.displayMetrics.density
+        val sliderLengthPx = (240 * density).toInt()
+        val sliderThicknessPx = (36 * density).toInt()
+        val seekSteps = 200
 
         val sliderLabel = TextView(this).apply {
             textSize = 13f
             setTextColor(Color.WHITE)
             gravity = android.view.Gravity.CENTER
             text = "${String.format("%.1f", curRatio)}x"
-            setPadding(0, 8, 0, 0)
+            setPadding(0, (4 * density).toInt(), 0, (4 * density).toInt())
         }
-        container.addView(sliderLabel)
 
-        val seekSteps = 200
+        // Rotated -90° so dragging up increases zoom (min at bottom, max at top)
         val seekBar = SeekBar(this).apply {
             max = seekSteps
             progress = ((curRatio - minRatio) / (maxRatio - minRatio) * seekSteps).toInt()
-            setPadding(24, 4, 24, 4)
+            rotation = -90f
+            layoutParams = FrameLayout.LayoutParams(sliderLengthPx, sliderThicknessPx).apply {
+                gravity = android.view.Gravity.CENTER
+            }
         }
+
+        // Wrapper swaps layout dimensions so the parent sees the visual (rotated) size
+        val seekWrapper = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(sliderThicknessPx, sliderLengthPx)
+        }
+        seekWrapper.addView(seekBar)
 
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
@@ -254,11 +268,30 @@ class MainActivity : AppCompatActivity() {
                 sb.progress = ((final - minRatio) / (maxRatio - minRatio) * seekSteps).toInt()
             }
         })
-        container.addView(seekBar)
 
+        val sliderColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins((8 * density).toInt(), 0, (8 * density).toInt(), 0) }
+        }
+        sliderColumn.addView(sliderLabel)
+        sliderColumn.addView(seekWrapper)
+        container.addView(sliderColumn)
+
+        val buttonsColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
         items.forEach { ratio ->
             val btn = Button(this, null, android.R.attr.borderlessButtonStyle).apply {
-                text = "${String.format("%.1f", ratio)}x"
+                text = if (ratio == maxRatio) "Max" else "${String.format("%.1f", ratio)}x"
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     currentZoomRatio = ratio
@@ -270,8 +303,9 @@ class MainActivity : AppCompatActivity() {
                     findViewById<View>(R.id.panel_click_interceptor)?.visibility = View.GONE
                 }
             }
-            container.addView(btn)
+            buttonsColumn.addView(btn)
         }
+        container.addView(buttonsColumn)
     }
 
     private fun setupQualitySpinner() {
@@ -413,6 +447,7 @@ class MainActivity : AppCompatActivity() {
                 val zoomState = camera.cameraInfo.zoomState.value
                 val minZoom = zoomState?.minZoomRatio ?: 1.0f
                 val maxZoom = zoomState?.maxZoomRatio ?: minZoom
+                prefs.edit().putFloat("max_zoom_ratio", maxZoom).apply()
                 val targetZoom = currentZoomRatio?.coerceIn(minZoom, maxZoom) ?: maxOf(0.5f, minZoom)
                 cameraControl?.setZoomRatio(targetZoom)
                 currentZoomRatio = targetZoom

@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">SplitShot</string>
+    <string name="app_name">Split Shot</string>
     <string name="start_recording">Start Recording</string>
     <string name="stop_recording">Stop Recording</string>
 </resources>
