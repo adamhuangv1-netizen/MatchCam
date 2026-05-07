@@ -291,7 +291,7 @@ class MainActivity : AppCompatActivity() {
         }
         items.forEach { ratio ->
             val btn = Button(this, null, android.R.attr.borderlessButtonStyle).apply {
-                text = if (ratio == maxRatio) "Max" else "${String.format("%.1f", ratio)}x"
+                text = "${String.format("%.1f", ratio)}x"
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     currentZoomRatio = ratio
