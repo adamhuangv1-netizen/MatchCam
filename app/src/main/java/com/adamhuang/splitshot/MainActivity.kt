@@ -289,7 +289,7 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         }
-        items.forEach { ratio ->
+        items.reversed().forEach { ratio ->
             val btn = Button(this, null, android.R.attr.borderlessButtonStyle).apply {
                 text = "${String.format("%.1f", ratio)}x"
                 setTextColor(Color.WHITE)
