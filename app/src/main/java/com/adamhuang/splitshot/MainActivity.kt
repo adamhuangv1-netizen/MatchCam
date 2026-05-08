@@ -96,7 +96,6 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("MatchCamSettings", Context.MODE_PRIVATE)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        clearPendingMediaFiles()
         setupQualitySpinner()
         setupSegmentSizeSpinner()
         setupMaxStorageToggle()
@@ -175,19 +174,6 @@ class MainActivity : AppCompatActivity() {
             contentResolver.update(uri, values, null, null)
         }
         contentResolver.notifyChange(uri, null)
-    }
-
-    private fun clearPendingMediaFiles() {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-            val selection = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.IS_PENDING} = 1"
-            contentResolver.update(
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                values,
-                selection,
-                arrayOf("DCIM/SplitShot%")
-            )
-        }
     }
 
     private fun saveSettings() {
