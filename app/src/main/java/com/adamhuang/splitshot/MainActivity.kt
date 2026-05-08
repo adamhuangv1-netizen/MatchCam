@@ -96,6 +96,7 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("MatchCamSettings", Context.MODE_PRIVATE)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
+        clearPendingMediaFiles()
         setupQualitySpinner()
         setupSegmentSizeSpinner()
         setupMaxStorageToggle()
@@ -167,6 +168,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun notifyMediaStoreFile(uri: android.net.Uri) {
+        if (uri == android.net.Uri.EMPTY) return
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+            contentResolver.update(uri, values, null, null)
+        }
+        contentResolver.notifyChange(uri, null)
+    }
+
+    private fun clearPendingMediaFiles() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+            val selection = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.IS_PENDING} = 1"
+            contentResolver.update(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                values,
+                selection,
+                arrayOf("DCIM/SplitShot%")
+            )
+        }
+    }
+
     private fun saveSettings() {
         val editor = prefs.edit()
         editor.putInt("segment_size_pos", findViewById<Spinner>(R.id.spinner_segment_size).selectedItemPosition)
@@ -176,6 +199,7 @@ class MainActivity : AppCompatActivity() {
         editor.putInt("quality_pos", findViewById<Spinner>(R.id.spinner_quality).selectedItemPosition)
         editor.putBoolean("max_storage_enabled", findViewById<SwitchCompat>(R.id.switch_max_storage).isChecked)
         editor.putString("max_storage_gb", findViewById<EditText>(R.id.edit_max_storage).text.toString())
+        editor.putBoolean("mute_audio", findViewById<SwitchCompat>(R.id.switch_mute_audio).isChecked)
         editor.apply()
     }
 
@@ -189,6 +213,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<SwitchCompat>(R.id.switch_max_storage).isChecked = maxStorageEnabled
         findViewById<EditText>(R.id.edit_max_storage).visibility = if (maxStorageEnabled) View.VISIBLE else View.GONE
         findViewById<EditText>(R.id.edit_max_storage).setText(prefs.getString("max_storage_gb", ""))
+        findViewById<SwitchCompat>(R.id.switch_mute_audio).isChecked = prefs.getBoolean("mute_audio", false)
     }
 
     private fun updateZoomLabel(ratio: Float) {
@@ -465,11 +490,11 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("MissingPermission")
     private fun createPendingRecording(capture: VideoCapture<Recorder>, withSizeLimit: Boolean): PendingRecording {
-        val name = "MatchCam_${System.currentTimeMillis()}"
+        val name = "SplitShot_${System.currentTimeMillis()}"
         val contentValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
-            put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/MatchCam")
+            put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/SplitShot")
         }
 
         val maxFileSizeBytes = getSelectedFileSizeLimit()
@@ -483,7 +508,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         val opts = optsBuilder.build()
-        return capture.output.prepareRecording(this, opts).withAudioEnabled()
+        val pending = capture.output.prepareRecording(this, opts)
+        val muted = findViewById<SwitchCompat>(R.id.switch_mute_audio)?.isChecked ?: false
+        return if (muted) pending else pending.withAudioEnabled()
     }
 
     @SuppressLint("MissingPermission")
@@ -590,6 +617,7 @@ class MainActivity : AppCompatActivity() {
                         || event.error == VideoRecordEvent.Finalize.ERROR_FILE_SIZE_LIMIT_REACHED)
                 ) {
                     cachedStorageBytes += finalizedBytes
+                    notifyMediaStoreFile(event.outputResults.outputUri)
                 }
 
                 if (!dualRecorderSupported

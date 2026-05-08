@@ -226,6 +226,18 @@
                     android:paddingTop="8dp"
                     android:paddingBottom="8dp" />
 
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/switch_mute_audio"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Mute Audio"
+                    android:textColor="#FFFFFF"
+                    android:checked="false"
+                    app:thumbTint="@color/switch_thumb_tint"
+                    app:trackTint="@color/switch_track_tint"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp" />
+
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
